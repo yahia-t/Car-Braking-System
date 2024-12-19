@@ -9,82 +9,90 @@
 
 #define OBSTACLE_DISTANCE_CM 20   // Distance threshold for obstacle detection
 #define MIN_VALID_DISTANCE_CM 2  // Minimum valid distance to filter out noise
-#define LED_ON_DURATION_MS 1000  // Duration to keep LEDs on during deceleration (1 second)
-#define ULTRASOUND_DELAY_MS 100  // Delay between ultrasonic readings (100ms)
 
-int main() {
-    stdio_init_all();            // Initialize stdio for debugging
-    motor_init();                // Initialize motor
-    ultrasound_init();           // Initialize ultrasonic sensor
-    accelerometer_init();        // Initialize accelerometer
-    led_init();                  // Initialize LEDs
-    ldr_init();
+#define ACCELEROMETER_DELAY 500
+#define ULTRASOUND_DELAY 100
+#define ACT_DURATION 3000 // Duration of actuators activity
+#define MOTOR_GRACE 2000 // Grace period to move forward before checking obstacles
+
+float distance = -1;
+bool decelerating = false;
+
+void accelerometer_task(void * pvParameters) {
+    accelerometer_init();
+    uint32_t current_rpm = 0, prev_rpm = 0;
+
+    while (1) {
+        current_rpm = accelerometer_read(); // Read the current RPM
+        decelerating = (current_rpm < prev_rpm - 10) && (current_rpm > 0) && distance <= OBSTACLE_DISTANCE_CM;
+        prev_rpm = current_rpm;
+        vTaskDelay(pdMS_TO_TICKS(ACCELEROMETER_DELAY));
+    }
+}
+
+void act_task(void * pvParameters) {
+    led_init();
     buzzer_init();
 
-    printf("System starting up...\n");
-    motor_forward();             // Start the motor moving forward
-    sleep_ms(2000);              // Grace period to move forward before checking obstacles
-
-    uint32_t prev_rpm = 0;       // Store the previous RPM reading
-    uint32_t current_rpm = 0;    // Store the current RPM reading
-    uint32_t last_read_time = time_us_32(); // Track time of last RPM read
-    uint32_t led_start_time = 0; // Track when LEDs were turned on
-    bool obstacle_detected = false;
-
-    while (true) {
-        // Check for obstacles using the ultrasonic sensor
-        float distance = ultrasound_read();
-        //printf("Distance to obstacle: %.2f cm\n", distance);
-
-        // Add a small delay between ultrasonic sensor readings
-        sleep_ms(ULTRASOUND_DELAY_MS);
-
-        // Only trigger deceleration if the distance is valid and below the threshold
-        if (distance <= OBSTACLE_DISTANCE_CM && distance >= MIN_VALID_DISTANCE_CM && !obstacle_detected) {
-            printf("Obstacle detected! Starting deceleration...\n");
-            obstacle_detected = true;
-            motor_start_slowdown(); // Begin non-blocking motor slowdown
-        }
-
-        // Handle motor slowdown in small steps
-        motor_slowdown_until_stop_step();
-
-        // Read RPM every 100ms
-        if ((time_us_32() - last_read_time) >= 500000) {
-            last_read_time = time_us_32();  // Update last read time
-            current_rpm = accelerometer_read(); // Read the current RPM
-
-            //printf("Current RPM: %u, Previous RPM: %u\n", current_rpm, prev_rpm);
-
-            // Detect deceleration
-            if ((current_rpm < prev_rpm - 10) && (current_rpm > 0) && distance <= OBSTACLE_DISTANCE_CM ) { 
-
-                if(ldr_read_voltage() < 1.5){
-                    led1_on(); 
-                    led2_on();
-                }
-                else{
-                    buzzer_on(); 
-                }
-                printf("Deceleration detected! Turning on LEDs.\n");
-                
-                led_start_time = time_us_32();  // Record the start time for LEDs
+    while (1) {
+        if (decelerating) {
+            if(ldr_read_voltage() < 1.5){
+                printf("Deceleration detected! Turned on LEDs.\n");
+                led1_on(); 
+                led2_on();
+                vTaskDelay(pdMS_TO_TICKS(ACT_DURATION));
+                printf("Turned off LEDs after deceleration duration.\n");
+                led1_off(); 
+                led2_off();
             }
-
-            // Turn off LEDs after the hardcoded duration
-            if (led_start_time > 0 && (time_us_32() - led_start_time) >= LED_ON_DURATION_MS * 3000) {
-                printf("Turning off LEDs after deceleration duration.\n");
-                led1_off();  // Turn off LED1
-                led2_off();  // Turn off LED2
+            else{
+                printf("Deceleration detected! Turned on buzzer.\n");
+                buzzer_on(); 
+                vTaskDelay(pdMS_TO_TICKS(ACT_DURATION));
+                printf("Turned off buzzer after deceleration duration.\n");
                 buzzer_off();
-                led_start_time = 0;  // Reset LED timer
             }
-
-            prev_rpm = current_rpm; // Update the previous RPM for the next iteration
         }
-
-        sleep_ms(10); // General small delay to prevent busy-waiting
+        vTaskDelay(pdMS_TO_TICKS(ACCELEROMETER_DELAY));
     }
+}
 
-    return 0;
+void ultrasound_task(void * pvParameters) {
+    ultrasound_init();
+
+    while (1) {
+        distance = ultrasound_read();
+        vTaskDelay(pdMS_TO_TICKS(ULTRASOUND_DELAY));
+    }
+}
+
+void motor_task(void * pvParameters) {
+    motor_init();
+    motor_forward();
+    bool obstacled = false;
+    vTaskDelay(pdMS_TO_TICKS(MOTOR_GRACE));
+
+    while (1) {
+        obstacled = distance <= OBSTACLE_DISTANCE_CM && distance >= MIN_VALID_DISTANCE_CM && !obstacled;
+        if (obstacled) {
+            printf("Obstacle detected! Starting deceleration...\n");
+            motor_start_slowdown(); // Begin non-blocking deceleration
+        }
+        motor_slowdown_until_stop_step(); // Gradually decrease speed in steps IF decelerating
+        vTaskDelay(pdMS_TO_TICKS(ULTRASOUND_DELAY));
+    }
+}
+
+int main() {
+    stdio_init_all(); // Initialized for debugging
+    ldr_init(); // No task for the ldr as it isn't periodically executed
+
+    printf("System starting up...\n");
+    xTaskCreate(accelerometer_task, "Accelerometer Task", 256, NULL, 1, NULL);
+    xTaskCreate(act_task, "Actuators Task", 256, NULL, 2, NULL);
+    xTaskCreate(ultrasound_task, "Ultrasound Task", 256, NULL, 1, NULL);
+    xTaskCreate(motor_task, "Motor Task", 256, NULL, 2, NULL);
+
+    vTaskStartScheduler(); // Found in FreeRTOS Kernel Control Kernel Control - FreeRTOS™
+    while (1) {};
 }
