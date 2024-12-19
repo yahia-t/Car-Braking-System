@@ -5,6 +5,8 @@
 #include "led.h"
 #include "ldr.h"
 #include "buzzer.h"
+#include "freeRTOS.h
+#include "task.h"
 #include <stdio.h>
 
 #define OBSTACLE_DISTANCE_CM 20   // Distance threshold for obstacle detection
