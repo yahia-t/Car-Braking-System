@@ -5,7 +5,7 @@
 #include "led.h"
 #include "ldr.h"
 #include "buzzer.h"
-#include "freeRTOS.h
+#include "freeRTOS.h"
 #include "task.h"
 #include <stdio.h>
 
